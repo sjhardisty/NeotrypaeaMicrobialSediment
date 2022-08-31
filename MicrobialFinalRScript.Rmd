@@ -1,0 +1,485 @@
+---
+title: "Microbial_Phyloseq_Pipeline"
+output: html_document
+date: '2022-08-22'
+---
+
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+Load Required Libraries 
+```{r}
+install.packages("devtools") 
+if (!require("BiocManager", quietly = TRUE))
+    install.packages("BiocManager")
+BiocManager::install(version = "3.15")
+BiocManager::install("microbiome")
+BiocManager::install("dada2")
+BiocManager::install("phyloseq")
+install.packages('ggplot2')
+install.packages('phyloseq')
+install.packages('DECIPHER')
+install.packages('phangorn')
+devtools::install_github("david-barnett/microViz@0.9.3")
+devtools::install_github("microsud/microbiomeutilities")
+
+##
+library('dada2')
+library('microbiome')
+library('phyloseq')
+library('DECIPHER')
+library('phangorn')
+library('ggplot2')
+library('microViz')
+library('microbiomeutilities')
+
+```
+
+
+
+
+List files for the estuary and offshore 
+
+```{r}
+
+path_offshore <- "C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq2" # CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(path_offshore)
+
+path_estuary <- "C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq" # CHANGE ME to the directory containing the fastq files after unzipping.
+list.files(path_estuary)
+
+```
+
+
+
+Part 1: Filter and trim  data to store as an OTU Table and Taxa Table
+*Skip to line 269 if you already have OTU Data Tables
+
+
+Create filepaths for offshore and estuary filtered data
+```{r}
+
+#offshore
+fnFs_O <- sort(list.files(path_offshore, pattern="R1_001.fastq"))
+fnRs_O <- sort(list.files(path_offshore, pattern="R2_001.fastq"))
+# Extract sample names, assuming filenames have format:
+sampleNames <- sapply(strsplit(fnFs_O, "_"), `[`, 1)
+# Specify the full path to the fnFs and fnRs
+fnFs_O <- file.path(path_offshore, fnFs_O)
+fnRs_O <- file.path(path_offshore, fnRs_O)
+
+#estuary
+fnFs_e <- sort(list.files(path_estuary, pattern="R1_001.fastq"))
+fnRs_e <- sort(list.files(path_estuary, pattern="R2_001.fastq"))
+# Extract sample names, assuming filenames have format: 
+sampleNames <- sapply(strsplit(fnFs_e, "_"), `[`, 1)
+# Specify the full path to the fnFs and fnRs
+fnFs_e <- file.path(path_offshore, fnFs_e)
+fnRs_e <- file.path(path_offshore, fnRs_e)
+
+```
+
+
+Plot quality profile to determine where to cut off reads. It looks like the offshore samples should be trimmed from 50:200, and the estuary samples from 25:225. 
+
+```{r}
+#setwd("C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq2")
+
+plotQualityProfile(fnFs_O[1:10])
+#40:225
+plotQualityProfile(fnRs_O[1:19])
+#50:200
+
+#setwd("C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq")
+
+plotQualityProfile(fnFs_e[1:10])
+#25:225
+plotQualityProfile(fnRs_e[1:10])
+#25:225
+```
+
+Create new filtered directories
+
+```{r}
+
+# Place filtered files in filtered/ subdirectory
+
+filtFs_O <- file.path(path_offshore, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs_O <- file.path(path_offshore, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs_O) <- sample.names
+names(filtRs_O) <- sample.names
+
+
+#estuary
+filtFs_e <- file.path(path_estuary, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtFs_e <- file.path(path_estuary, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs_e) <- sample.names
+names(filtFs_e) <- sample.names
+
+```
+
+
+Filter and trim! Set multithread = FALSE on windows and multithread = TRUE on OS.  
+
+```{r}
+#setwd("C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq2")
+
+out_O <- filterAndTrim(fnFs_O, filtFs_O, fnRs_O, filtRs_O,truncLen=c(200,200),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=FALSE)
+head(out)
+
+#setwd("C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq")
+
+out_e <- filterAndTrim(fnFs_e, filtFs_e, fnRs_e, filtRs_e, truncLen=c(225,225),
+              maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+              compress=TRUE, multithread=FALSE)
+head(out)
+
+```
+
+
+Dereplicate the genome 
+
+```{r}
+#setwd("C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq2")
+derepFs_O <- derepFastq(filtFs_O, verbose=TRUE)
+derepRs_O <- derepFastq(filtRs_O, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_O) <- sampleNames
+names(derepRs_O) <- sampleNames
+
+derepFs_e <- derepFastq(filtFs_e, verbose=TRUE)
+derepRs_e <- derepFastq(filtRs_e, verbose=TRUE)
+# Name the derep-class objects by the sample names
+names(derepFs_e) <- sampleNames
+names(derepRs_e) <- sampleNames
+
+
+```
+
+
+
+Learn errors + Plot errors. 
+```{r}
+
+
+#offshore
+
+errF_O <- learnErrors(filtFs_O, multithread=TRUE)
+errR_O <- learnErrors(filtRs_O, multithread=TRUE)
+
+plotErrors(errF_O)
+plotErrors(errR_O)
+
+
+#estuary
+
+errF_e <- learnErrors(filtFs_e, multithread=TRUE)
+errR_e <- learnErrors(filtRs_e, multithread=TRUE)
+
+plotErrors(errF_e)
+plotErrors(errR_e)
+
+
+plotErrors(errR)
+
+
+#everything looks normal (pattern followserror rates expected under the nominal definition of the Q-score.)
+```
+
+
+Apply the core sample inference algorithm to the filtered and trimmed sequence data.
+
+```{r}
+
+#offshore
+
+dadaFs_O <- dada(derepFs_O , err=errF_O , multithread=TRUE)
+dadaRs_O  <- dada(derepRs_O , err=errR_O , multithread=TRUE)
+
+#estuary 
+
+dadaFs_e <- dada(derepFs_e , err=errF_e , multithread=TRUE)
+dadaRs_e  <- dada(derepRs_e , err=errR_e , multithread=TRUE)
+```
+
+
+
+Construct sequence table and remove chimeras 
+
+```{r}
+#offshore
+mergers_O <- mergePairs(dadaFss_O, derepFss_O, dadaRss_O, derepRss_O)
+seqtabAlls_O <- makeSequenceTable(mergers[!grepl("Mock", names(mergers))])
+table(nchar(getSequences(seqtabAll)))
+seqtabNoC_O <- removeBimeraDenovo(seqtabAll_O)
+
+#estuary
+mergers_e <- mergePairs(dadaFss_e, derepFss_e, dadaRss_e, derepRss_e)
+seqtabAlls_e <- makeSequenceTable(mergers[!grepl("Mock", names(mergers))])
+table(nchar(getSequences(seqtabAll_e)))
+seqtabNoC_e <- removeBimeraDenovo(seqtabAll_e)
+
+```
+
+
+
+Create taxa tables for both estuary and offshore samples
+```{r}
+fastaRef <- "C:/Users/12069/Box/Sarah_Squared_Sharing/Miseq2/silva_nr_v132_train_set.fa.gz"
+
+taxTab_e <- assignTaxonomy(seqtabNoC_e, refFasta = fastaRef, multithread=TRUE)
+
+taxTab_O <- assignTaxonomy(seqtabNoC_O, refFasta = fastaRef, multithread=TRUE)
+
+unname(head(taxTab_e))
+
+unname(head(taxTab_O))
+```
+
+
+## Sample information included in a CSV file ##
+
+
+```{r}
+
+ps_O <- phyloseq(otu_table(seqtabNoC_O, taxa_are_rows=FALSE), 
+               sample_data(SarahX2Miseq2_samdf), 
+               tax_table(taxTab_O))
+
+ps_O <- prune_samples(sample_names(ps_O) != "Mock", ps) # Remove mock sample
+
+
+
+
+ps_e <- phyloseq(otu_table(seqtabNoC_e, taxa_are_rows=FALSE), 
+               sample_data(SarahX2_samdf), 
+               tax_table(taxTab_e))
+
+
+ps_e <- prune_samples(sample_names(ps_e) != "Mock", ps) # Remove mock sample
+
+ps_total <- merge_phyloseq(ps_e, ps_o)
+
+```
+
+
+## ALTERNATE WITH THE TABLES UPLOADED ##
+
+
+Re-structure tables to have the same rownames and make them matrices for input. 
+
+
+```{r}
+
+#offshore
+OTU_Table_O <- SarahX2Miseq2_OTU_all_table
+samdf_O <- SarahX2Miseq2_samdf
+taxTab_O <- SarahX2Miseq2_Taxa_all_table
+
+seqlabels_O <- taxTab_O$...1
+taxTab_O <- taxTab_O[,-1]
+rownames(taxTab_O) <- seqlabels_O
+taxTab_O <- as.matrix(taxTab_O)
+
+OTU_Table_O <- OTU_Table_O[,-1]
+OTU_Table_O <- OTU_Table_O[-1,]
+colnames(OTU_Table_O) <- seqlabels_O
+rownames(OTU_Table_O) <- rownames(samdf_O)
+OTU_Table_O <- data.matrix(OTU_Table_O, rownames.force = NA)
+
+
+#estuary
+OTU_Table_e <- SarahX2_OTU_all_table
+samdf_e  <- SarahX2_samdf
+taxTab_e  <- SarahX2_Taxa_all_table
+
+OTU_Table_e <- data.matrix(OTU_Table_e, rownames.force = NA)
+taxTab_e <- as.matrix(taxTab_e)
+
+sam_total <- merge(samdf_O, samdf_e, all = TRUE, sort = FALSE)
+
+
+```
+
+
+
+```{r}
+ps_O <- phyloseq(otu_table(OTU_Table_O, taxa_are_rows=TRUE), 
+               sample_data(samdf_O), 
+               tax_table(taxTab_O))
+
+
+ps_O <- prune_samples(sample_names(ps_O) != "Mock", ps) # Remove mock sample
+
+
+ps_e <- phyloseq(otu_table(OTU_Table_e, taxa_are_rows=FALSE), 
+               sample_data(samdf_e), 
+               tax_table(taxTab_e))
+
+ps_e <- prune_samples(sample_names(ps_e) != "Mock", ps) # Remove mock sample
+
+ps_shrimp <- merge_phyloseq(ps_e, ps_o)
+
+saveRDS(object = ps_shrimp, file = "phyloseqobject_neotrypaea.rds")
+
+saveRDS(object = sam_total, file = "totalsampledata.rds")
+
+```
+
+
+##phyloseq object available on github##
+
+
+Create Shannon and Simpson plot
+
+```{r}
+
+plot_richness(ps_shrimp, x="Neotrypaea", measures=c("Shannon", "Simpson"), color ="Location")
+
+```
+
+
+Create an ordination plot 
+
+```{r}
+# Transform data to proportions as appropriate for Bray-Curtis distances
+# First, we normalize the sequence counts by converting from raw abundance to relative abundance. This removes any bias due to total sequence counts per sample.
+pn = transform_sample_counts(ps_shrimp, function(x) 100 * x/sum(x))
+
+# Next, we use the `distance()` function from phyloseq to generate a distance matrix from our phyloseq object. You can select from multiple methods; we will use Bray-Curtis
+iDist <- distance(pn, method = "bray")
+
+# Using the distance matrix created above, we now make an NMDS ordination using the `ordinate()` function.
+pn.nmds = ordinate(pn, 
+                method = "NMDS", 
+                distance = iDist)
+
+# Finally, we create an plot of the previous ordination using the `plot_ordination()` function. The `justDF` option is set to `TRUE`, which indicates that we only want the dataframe created with plot ordination to be returned, not a ggplot object.
+plot.pn.nmds = plot_ordination(pn, pn.nmds, justDF = TRUE)
+
+
+print(ggplot(plot.pn.nmds, aes(x = NMDS1, y = NMDS2, color = Neotrypaea, shape = Location)) + 
+        geom_point( size = 4, alpha = 0.75))
+
+
+
+
+```
+
+
+
+MicroViz
+```{r}    
+##ordination plots with bacteria association
+ps_shrimp_besthit <- taxglom(ps_shrimp, "Genus")
+ps_shrimp_besthit <- format_to_besthit(ps_shrimp)
+
+top60 <- names(sort(taxa_sums(ps_shrimp_besthit), decreasing=TRUE))[1:60]
+ps.top60 <- transform_sample_counts(ps_shrimp_besthit, function(OTU) OTU/sum(OTU)) # this define what the relative abundance is. 
+ps.top60 <- prune_taxa(top60, ps.top60)
+
+ps.rel <- transform_sample_counts(ps_shrimp_besthit, function(OTU) OTU/sum(OTU))
+
+ps_shrimp_besthit %>% tax_fix(unknowns = c("endosymbionts", "Incertae Sedis"))`
+
+
+
+ord_explore(ps_shrimp_besthit)
+
+ord_explore(ps.top60)
+tax_fix_interactive(ps.top60)
+
+ps_shrimp_besthit %>% 
+  tax_transform("clr", rank = "Phylum") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method %>% 
+  ord_calc(method = "PCA") %>% 
+  ord_plot(color = "Neotrypaea", shape = "Location", plot_taxa = 1:10, tax_lab_style = tax_lab_style(size = 3, alpha = 0.5), size = 4) +
+  scale_colour_brewer(palette = "Dark2")
+
+ps.top60 %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method %>% 
+  ord_calc(method = "PCA") %>% 
+  ord_plot(color = "Neotrypaea", shape = "Location", plot_taxa = 1:10, tax_lab_style = tax_lab_style(size = 3, alpha = 0.5), size = 4) +
+  scale_colour_brewer(palette = "Dark2")
+
+
+ps_shrimp_besthit %>% 
+  tax_transform("clr", rank = "Genus") %>% 
+  # when no distance matrix or constraints are supplied, PCA is the default/auto ordination method %>% 
+  ord_calc(method = "PCA") %>% 
+  ord_plot(color = "Neotrypaea", shape = "Location", plot_taxa = 1:10, tax_lab_style = tax_lab_style(size = 3, alpha = 0.5), size = 4) +
+  scale_colour_brewer(palette = "Dark2")
+```
+
+
+
+
+
+```{r}
+##plot bar 2 function 
+
+plot_bar2<-function (physeq, x = "Sample", y = "Abundance", fill = NULL, 
+                     title = NULL, facet_grid = NULL) 
+{
+  mdf = psmelt(physeq)
+  p = ggplot(mdf, aes_string(x = x, y = y, fill = fill))
+  p = p + geom_bar(stat = "identity", position = "stack", color = NA)
+  p = p + theme(axis.text.x = element_text(angle = -90, hjust = 0))
+  if (!is.null(facet_grid)) {
+    p <- p + facet_grid(facet_grid)
+  }
+  if (!is.null(title)) {
+    p <- p + ggtitle(title)
+  }
+  return(p)
+}
+
+
+
+
+##Taxa of Interest
+
+ps.rel_Desulfo <- subset_taxa(ps.rel, Family == 'Desulfobulbaceae') 
+
+ps.rel_Sva0485 <- subset_taxa(ps.rel, Phylum == 'Sva0485') 
+
+ps.rel_Shewanella <- subset_taxa(ps.rel, Genus == 'Shewanella') 
+
+ps.rel_Pseudoalteromonas <- subset_taxa(ps.rel, Genus == 'Pseudoalteromonas') 
+
+ps.rel_Bacillus <- subset_taxa(ps.rel, Genus == 'Bacillus') 
+
+ps.rel_Cellulophaga <- subset_taxa(ps.rel, Genus == 'Cellulophaga')
+
+
+plot_bar2(ps.top60, x="Neotrypaea", fill="Phylum")
+
+plot_bar2(ps.rel_Desulfo, x="Neotrypaea", fill="Phylum") + facet_grid(~ Location)
+plot_bar2(ps.rel_Sva0485, x="Neotrypaea", fill="Phylum") + facet_grid(~ Location)
+plot_bar2(ps.rel_Shewanella, x="Neotrypaea", fill="Genus") + facet_grid(~ Location)
+plot_bar2(ps.rel_Pseudoalteromonas, x="Neotrypaea", fill="Genus") + facet_grid(~ Location)
+plot_bar2(ps.rel_Bacillus, x="Neotrypaea", fill="Genus") + facet_grid(~ Location)
+plot_bar2(ps.rel_Cellulophaga, x="Neotrypaea", fill="Genus") + facet_grid(~ Location)
+
+  
+```
+
+Permanova Test
+
+```{r}
+metadata <- as(sample_data(ps_shrimp), "data.frame")
+
+permanova <- adonis(iDist ~ Neotrypaea + Location + Neotrypaea*Location,
+               data = metadata, permutations=99, method = "bray")
+
+permanova
+```
+
